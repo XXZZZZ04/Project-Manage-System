@@ -1029,6 +1029,7 @@ function settingsPage(state) {
         ${tagDomain(state, 'project', '项目标签种类', '这里只定义种类和可选内容。具体项目选哪一项，在项目设置里，会显示在左侧项目行右边。')}
         ${tagDomain(state, 'idea', '想法标签种类', '想法列表上的标签种类。和项目标签互不影响。')}
       </div>
+      ${state.desktop ? '' : `
       <section class="panel" id="sec-reset">
         <div class="panel-h"><h3>示例数据</h3></div>
         <div class="opt">
@@ -1038,7 +1039,7 @@ function settingsPage(state) {
             <button type="button" class="btn danger" data-act="reset-ask">重置示例数据</button>
           </div>
         </div>
-      </section>
+      </section>`}
         </div>
       </div>
     </div>`;
@@ -1063,7 +1064,9 @@ function repoSection(state) {
   return `
     <section class="panel" id="sec-repo">
       <div class="panel-h"><h3>Git 仓库</h3><span class="pill ${logged ? 'ok' : ''}">${logged ? `已登录 ${esc(g.username)}` : '未登录'}</span></div>
-      <p class="hint">只提交项目数据，例如任务、Bug、想法、里程碑和回收站。这个软件本身不会进仓库。原型不会真的连接 GitHub，登录状态记在这台浏览器里。</p>
+      <p class="hint">${state.desktop
+        ? '只提交项目数据，例如任务、Bug、想法、里程碑和回收站。这个软件本身不会进仓库。登录会真的连接 GitHub。'
+        : '只提交项目数据，例如任务、Bug、想法、里程碑和回收站。这个软件本身不会进仓库。原型不会真的连接 GitHub，登录状态记在这台浏览器里。'}</p>
       <div class="form-grid">
         <label class="stack">仓库地址
           <input data-input="github-url" value="${esc(g.url)}" placeholder="https://github.com/你的名字/仓库" />
@@ -1075,7 +1078,7 @@ function repoSection(state) {
           <input data-input="github-user" value="${esc(g.username)}" />
         </label>
         <label class="stack">个人访问令牌
-          <input data-input="github-token" type="password" value="${esc(g.token)}" placeholder="原型里随便填一串即可" />
+          <input data-input="github-token" type="password" value="${esc(g.token)}" placeholder="${state.desktop ? 'GitHub 个人访问令牌' : '原型里随便填一串即可'}" />
         </label>
       </div>
       <label class="checkline">
@@ -1087,6 +1090,7 @@ function repoSection(state) {
         <button type="button" class="btn" data-act="logout" ${logged ? '' : 'disabled'}>退出登录</button>
       </div>
       ${g.remembered && g.url ? `<p class="hint">已记住仓库 ${esc(g.url)}。</p>` : ''}
+      ${state.desktop && state.vaultPath ? `<p class="hint">项目文件在 ${esc(state.vaultPath)}。令牌只留在这台电脑，不会提交。</p>` : ''}
     </section>`;
 }
 

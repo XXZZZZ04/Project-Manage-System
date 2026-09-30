@@ -1,14 +1,37 @@
 {
-  "name": "project-manage-prototype",
+  "name": "project-manage",
   "private": true,
   "version": "0.1.0",
   "type": "module",
+  "main": "electron/main.cjs",
   "scripts": {
     "dev": "vite --host 0.0.0.0 --port 43123",
     "build": "vite build",
-    "preview": "vite preview --host 0.0.0.0 --port 43123"
+    "preview": "vite preview --host 0.0.0.0 --port 43123",
+    "desktop": "electron .",
+    "pack": "vite build && electron-builder --win portable"
   },
   "devDependencies": {
+    "electron": "^35.7.5",
+    "electron-builder": "^26.0.12",
     "vite": "^6.3.5"
+  },
+  "build": {
+    "appId": "local.projectmanage.app",
+    "productName": "ProjectManage",
+    "asar": false,
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": "portable",
+      "signAndEditExecutable": false,
+      "artifactName": "ProjectManage-${version}.${ext}"
+    }
   }
 }

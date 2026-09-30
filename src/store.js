@@ -60,6 +60,200 @@ export function projectFiles(source = state) {
   return files;
 }
 
+export function syncFiles(source = state) {
+  const files = projectFiles(source);
+  files['library.json'] = JSON.stringify({
+    schema: source.schema,
+    projectOrder: source.projects.map((project) => project.id),
+    tagKinds: source.tagKinds,
+  }, null, 2);
+  return files;
+}
+
+function parseJson(text, fallback) {
+  if (!text) return fallback;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return fallback;
+  }
+}
+
+export function hydrateFiles(files) {
+  const library = parseJson(files['library.json'], { schema: SCHEMA, projectOrder: [], tagKinds: [] });
+  const trash = parseJson(files['trash.json'], []);
+  const ids = [];
+  for (const filePath of Object.keys(files)) {
+    const match = /^projects\/([^/]+)\/project\.json$/.exec(filePath);
+    if (match) ids.push(match[1]);
+  }
+  const order = Array.isArray(library.projectOrder) ? library.projectOrder : [];
+  ids.sort((a, b) => {
+    const ia = order.indexOf(a);
+    const ib = order.indexOf(b);
+    if (ia === -1 && ib === -1) return a.localeCompare(b);
+    if (ia === -1) return 1;
+    if (ib === -1) return -1;
+    return ia - ib;
+  });
+  const projects = ids.map((id) => {
+    const root = `projects/${id}`;
+    const meta = parseJson(files[`${root}/project.json`], {});
+    return {
+      id,
+      name: meta.name || '未命名项目',
+      description: meta.description || '',
+      tags: meta.tags || {},
+      modules: meta.modules || [],
+      versions: meta.versions || [],
+      tasks: parseJson(files[`${root}/tasks.json`], []),
+      bugs: parseJson(files[`${root}/bugs.json`], []),
+      ideas: parseJson(files[`${root}/ideas.json`], []),
+      notes: parseJson(files[`${root}/notes.json`], []),
+      milestones: parseJson(files[`${root}/milestones.json`], []),
+    };
+  });
+  return {
+    schema: library.schema || SCHEMA,
+    tagKinds: library.tagKinds || [],
+    projects,
+    trash,
+  };
+}
+
+function emptyGithub() {
+  return { url: '', branch: 'main', username: '', token: '', remembered: true };
+}
+
+function emptyGit() {
+  return {
+    branch: 'main',
+    ahead: 0,
+    behind: 0,
+    commitMessage: '',
+    staged: {},
+    base: {},
+    incoming: [],
+    commits: [],
+    live: true,
+    changes: [],
+  };
+}
+
+export function desktopSeed() {
+  const next = createSeed();
+  next.projects = [];
+  next.trash = [];
+  next.settings.github = emptyGithub();
+  next.git = emptyGit();
+  next.ui.projectId = '';
+  next.ui.expanded = {};
+  next.ui.listVersion = '';
+  next.ui.kanbanVersion = '';
+  next.ui.graphTaskId = '';
+  for (const kind of next.tagKinds) {
+    if (kind.bindVersions) kind.values = kind.values.filter((value) => !value.projectId);
+  }
+  return next;
+}
+
+export function normalizeUi(target) {
+  target.ui = target.ui || {};
+  const ui = target.ui;
+  ui.bugDrafts = ui.bugDrafts || {};
+  ui.expanded = ui.expanded || {};
+  ui.expandedProjects = ui.expandedProjects || {};
+  ui.subDesc = ui.subDesc || {};
+  ui.taskMeta = ui.taskMeta || {};
+  ui.depOpen = ui.depOpen || {};
+  const tabIds = ['dashboard', 'list', 'kanban', 'bugs', 'ideas'];
+  const order = Array.isArray(ui.tabOrder) ? ui.tabOrder.filter((id) => tabIds.includes(id)) : [];
+  for (const id of tabIds) if (!order.includes(id)) order.push(id);
+  ui.tabOrder = order;
+  const project = (target.projects || []).find((item) => item.id === ui.projectId) || target.projects?.[0];
+  if (project && !ui.projectId) ui.projectId = project.id;
+  const latest = project?.versions?.[project.versions.length - 1];
+  const versions = project?.versions || [];
+  if (latest && (!ui.listVersion || ui.listVersion === 'all' || !versions.some((version) => version.id === ui.listVersion))) {
+    ui.listVersion = latest.id;
+  }
+  if (latest && (!ui.kanbanVersion || ui.kanbanVersion === 'all' || !versions.some((version) => version.id === ui.kanbanVersion))) {
+    ui.kanbanVersion = latest.id;
+  }
+  const sideWidth = Number(ui.sidebarWidth);
+  ui.sidebarWidth = Number.isFinite(sideWidth) ? Math.min(480, Math.max(200, sideWidth)) : 268;
+  target.git = target.git || emptyGit();
+  target.git.staged = target.git.staged || {};
+  target.git.incoming = target.git.incoming || [];
+  target.git.base = target.git.base || {};
+  target.git.changes = target.git.changes || [];
+  target.git.commits = target.git.commits || [];
+  target.trash = target.trash || [];
+  target.settings = target.settings || { theme: 'dark', github: emptyGithub() };
+  target.settings.github = Object.assign(emptyGithub(), target.settings.github || {});
+}
+
+export function applyGitStatus(info) {
+  if (!info) return;
+  state.git.live = true;
+  state.git.branch = info.branch || state.git.branch || 'main';
+  state.git.ahead = info.ahead || 0;
+  state.git.behind = info.behind || 0;
+  state.git.commits = info.commits || [];
+  const local = (info.local || []).map((entry) => {
+    const kind = kindFromStatus(entry.x, entry.y);
+    return {
+      path: entry.path,
+      kind,
+      staged: entry.x !== ' ' && entry.x !== '?' && (entry.y === ' ' || !entry.y),
+      remote: false,
+      summary: describeLocal(entry.path, kind),
+    };
+  });
+  const remote = (info.remote || []).map((entry) => ({
+    path: entry.path,
+    kind: 'P',
+    staged: false,
+    remote: true,
+    summary: '远端有更新，拉取后会写进这台电脑',
+  }));
+  state.git.changes = [...local, ...remote];
+}
+
+function kindFromStatus(x, y) {
+  const code = y && y !== ' ' && y !== '?' ? y : x;
+  if (code === '?' || code === 'A' || code === 'C') return 'A';
+  if (code === 'D') return 'D';
+  return 'M';
+}
+
+function bootDesktop(loaded) {
+  if (loaded.empty) {
+    state = desktopSeed();
+  } else {
+    const data = hydrateFiles(loaded.files || {});
+    const session = loaded.session || {};
+    state = {
+      schema: data.schema || SCHEMA,
+      settings: session.settings || { theme: 'dark', github: emptyGithub() },
+      tagKinds: data.tagKinds,
+      projects: data.projects,
+      trash: data.trash,
+      git: emptyGit(),
+      ui: session.ui || {},
+      toast: null,
+      modal: null,
+    };
+    state.git.commitMessage = session.commitMessage || '';
+  }
+  state.desktop = true;
+  state.git.live = true;
+  state.vaultPath = loaded.vaultPath || '';
+  normalizeUi(state);
+  if (loaded.status) applyGitStatus(loaded.status);
+  if (loaded.empty) persist({ status: true });
+}
+
 function applyDirtySeed(next) {
   const dash = next.projects[0].tasks.find((t) => t.id === 't_dash_cd');
   dash.description += '\n\n本地补充：冷却数字先用一位小数，按键图标等图标定了再补。';
@@ -76,7 +270,7 @@ export function freshState() {
   return next;
 }
 
-export function persist() {
+export function persist(options = {}) {
   const copy = JSON.parse(JSON.stringify(state));
   copy.toast = null;
   copy.modal = null;
@@ -89,10 +283,40 @@ export function persist() {
     copy.ui.versionMenu = false;
     copy.ui.motion = null;
   }
+  if (state.desktop && globalThis.pms?.isDesktop) {
+    const result = globalThis.pms.save({
+      files: syncFiles(copy),
+      session: {
+        settings: copy.settings,
+        ui: copy.ui,
+        commitMessage: copy.git?.commitMessage || '',
+      },
+      status: !!(options.status || copy.ui?.scmOpen),
+    });
+    if (result?.status) applyGitStatus(result.status);
+    if (result && result.ok === false) {
+      state.toast = state.toast || { msg: result.msg || '没有保存到磁盘', kind: 'error' };
+    }
+    return;
+  }
   ls.setItem(KEY, JSON.stringify(copy));
 }
 
 export function init() {
+  if (globalThis.pms?.isDesktop) {
+    const loaded = globalThis.pms.load();
+    if (!loaded?.ok) {
+      state = desktopSeed();
+      state.desktop = true;
+      state.git.live = true;
+      state.vaultPath = loaded?.vaultPath || '';
+      normalizeUi(state);
+      state.toast = { msg: loaded?.msg || '数据目录还没准备好', kind: 'error' };
+      return;
+    }
+    bootDesktop(loaded);
+    return;
+  }
   const raw = ls.getItem(KEY);
   if (raw) {
     try {
@@ -139,6 +363,15 @@ export function init() {
 }
 
 export function reset() {
+  if (state?.desktop && globalThis.pms?.isDesktop) {
+    const vaultPath = state.vaultPath;
+    state = desktopSeed();
+    state.desktop = true;
+    state.vaultPath = vaultPath;
+    normalizeUi(state);
+    persist({ status: true });
+    return;
+  }
   ls.removeItem(KEY);
   state = freshState();
   persist();
@@ -146,16 +379,19 @@ export function reset() {
 
 export function isLoggedIn() {
   const g = state.settings.github;
-  if (!g.username || !g.token || !g.url) return false;
+  if (!g?.username || !g.token || !g.url) return false;
   try {
     const host = new URL(g.url).hostname;
-    return host === 'github.com' || host.endsWith('.github.com');
+    if (host !== 'github.com' && !host.endsWith('.github.com')) return false;
   } catch {
     return false;
   }
+  if (state?.desktop) return !!g.verified;
+  return true;
 }
 
 export function gitChanges() {
+  if (state?.git?.live) return state.git.changes || [];
   const current = projectFiles(state);
   const base = state.git.base || {};
   const staged = state.git.staged || {};
@@ -193,6 +429,7 @@ function describeLocal(path, kind) {
   if (path.endsWith('/milestones.json')) return '里程碑有改动';
   if (path.endsWith('/project.json')) return '项目信息、模块或版本有改动';
   if (path === 'trash.json') return '回收站有改动';
+  if (path === 'library.json') return '标签种类有改动';
   return '已修改';
 }
 

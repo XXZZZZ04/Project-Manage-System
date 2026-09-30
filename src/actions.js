@@ -1,12 +1,15 @@
 import { BUG_STATUSES } from './seed.js';
 import {
+  applyGitStatus,
   commitStaged,
   currentProject,
   findProject,
   gitChanges,
+  hydrateFiles,
   isLoggedIn,
   kinds,
   latestVersion,
+  normalizeUi,
   nowStamp,
   persist,
   pullCommits,
@@ -371,7 +374,9 @@ function run(act, el) {
       state.modal = {
         type: 'confirm',
         title: '重置示例数据',
-        body: '这台浏览器里的项目、回收站和未提交的更改都会回到最初的示例。',
+        body: state.desktop
+          ? '项目、回收站和未提交的更改都会回到最初的示例。已经提交到 Git 的记录还在。'
+          : '这台浏览器里的项目、回收站和未提交的更改都会回到最初的示例。',
         confirm: '重置',
         action: 'reset',
       };
@@ -399,9 +404,11 @@ function run(act, el) {
       scmTool(id);
       return;
     case 'stage-file':
+      if (runLiveGit({ op: 'stage', path: el.dataset.path })) return;
       state.git.staged[el.dataset.path] = true;
       break;
     case 'unstage-file':
+      if (runLiveGit({ op: 'unstage', path: el.dataset.path })) return;
       delete state.git.staged[el.dataset.path];
       break;
     case 'pick-file':
@@ -765,7 +772,16 @@ function saveGithub() {
     draw();
     return;
   }
-  if (g.remembered) toast('已登录，这个仓库会记在这台浏览器里', 'success');
+  if (state.git.live) {
+    const result = desktopGit({ op: 'login' });
+    g.verified = !!result.ok;
+    if (!result.ok) {
+      toast(result.msg, 'error');
+      draw();
+      return;
+    }
+  }
+  if (g.remembered) toast(state.desktop ? '已登录，这个仓库会记在这台电脑上' : '已登录，这个仓库会记在这台浏览器里', 'success');
   else toast('已登录。没有勾选记住仓库，退出后地址不会留着', 'success');
   draw();
 }
@@ -773,6 +789,7 @@ function saveGithub() {
 function logout() {
   const g = state.settings.github;
   g.token = '';
+  g.verified = false;
   if (!g.remembered) {
     g.url = '';
     g.username = '';
@@ -995,7 +1012,54 @@ function restoreItem(id) {
   toast('已恢复', 'success');
 }
 
+function desktopGit(op) {
+  const g = state.settings.github;
+  const result = globalThis.pms.git({
+    op: op.op,
+    path: op.path || '',
+    message: state.git.commitMessage || '',
+    url: g.url,
+    branch: g.branch,
+    username: g.username,
+    token: g.token,
+  });
+  if (result?.files) {
+    const data = hydrateFiles(result.files);
+    state.tagKinds = data.tagKinds;
+    state.projects = data.projects;
+    state.trash = data.trash;
+    if (!state.projects.some((project) => project.id === state.ui.projectId)) {
+      state.ui.projectId = state.projects[0]?.id || '';
+    }
+    normalizeUi(state);
+  }
+  if (result?.status) applyGitStatus(result.status);
+  if (op.clearMessage && result?.ok) state.git.commitMessage = '';
+  return result || { ok: false, msg: '没有连上本机 Git' };
+}
+
+function runLiveGit(op) {
+  if (!state.git.live) return false;
+  const result = desktopGit(op);
+  if (!result.ok) toast(result.msg, 'error');
+  draw();
+  return true;
+}
+
 function scmTool(id) {
+  if (state.git.live) {
+    if ((id === 'commit' || id === 'commit-push') && !(state.git.commitMessage || '').trim()) {
+      toast('先写提交信息', 'error');
+      return;
+    }
+    const result = desktopGit({
+      op: id,
+      clearMessage: id === 'commit' || id === 'commit-push',
+    });
+    toast(result.msg, result.ok ? 'success' : 'error');
+    draw();
+    return;
+  }
   if (id === 'stage-all') {
     const local = gitChanges().filter((c) => !c.remote);
     if (!local.length) {
@@ -1452,10 +1516,17 @@ function onInput(event) {
   } else if (key === 'new-module') state.ui.newModule = el.value;
   else if (key === 'new-version-name') state.ui.newVersionName = el.value;
   else if (key === 'new-version-title') state.ui.newVersionTitle = el.value;
-  else if (key === 'github-url') state.settings.github.url = el.value;
-  else if (key === 'github-branch') state.settings.github.branch = el.value;
-  else if (key === 'github-user') state.settings.github.username = el.value;
-  else if (key === 'github-token') state.settings.github.token = el.value;
+  else if (key === 'github-url') {
+    state.settings.github.url = el.value;
+    state.settings.github.verified = false;
+  } else if (key === 'github-branch') state.settings.github.branch = el.value;
+  else if (key === 'github-user') {
+    state.settings.github.username = el.value;
+    state.settings.github.verified = false;
+  } else if (key === 'github-token') {
+    state.settings.github.token = el.value;
+    state.settings.github.verified = false;
+  }
   else if (key === 'modal' && state.modal) state.modal[el.dataset.key] = el.value;
   persist();
   if (live) {

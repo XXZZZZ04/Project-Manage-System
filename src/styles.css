@@ -247,7 +247,7 @@ input, textarea, select {
   border-color: color-mix(in srgb, var(--accent) 55%, var(--line));
   background: var(--bg-input);
 }
-.sidebar-scroll { flex: 1; min-height: 0; overflow: auto; padding: 0 8px 16px; }
+.sidebar-scroll { flex: 1; min-height: 0; overflow: auto; overflow-x: hidden; padding: 0 12px 16px 8px; }
 .side-label {
   margin: 10px 8px 6px;
   color: var(--muted);
@@ -275,16 +275,19 @@ input, textarea, select {
   color: var(--text);
   text-align: left;
 }
-.project-block { border-radius: 10px; margin-bottom: 2px; }
+.project-block { border-radius: 10px; margin-bottom: 2px; min-width: 0; overflow: hidden; }
 .project-block.active { background: var(--bg-active); }
 .project-row {
   display: grid;
-  grid-template-columns: 22px minmax(0, 1fr) auto 28px;
+  grid-template-columns: 22px minmax(0, 1fr) minmax(0, auto) 30px;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   min-height: 40px;
+  min-width: 0;
+  max-width: 100%;
   border-radius: 10px;
   margin-bottom: 0;
+  box-sizing: border-box;
 }
 .project-mods { display: flex; flex-direction: column; gap: 4px; padding: 0 8px 8px 36px; }
 .mod-chip {
@@ -296,6 +299,7 @@ input, textarea, select {
 }
 .project-row, .nav-item, .hit, .link-row, .file-row { transition: background 0.15s ease, transform 0.15s ease; }
 .project-row:hover, .nav-item:hover, .hit:hover, .file-row:hover { background: var(--bg-hover); transform: translateX(3px); }
+.project-row:hover { transform: none; }
 .link-row { position: relative; }
 .link-row span, .pname, .file-name, .kcard-title, .gnode strong {
   background-image: linear-gradient(currentColor, currentColor);
@@ -319,7 +323,7 @@ input, textarea, select {
 }
 .pname { display: block; color: var(--text-strong); font-weight: 560; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
-.chips.side-tags { margin-top: 0; flex: none; flex-wrap: nowrap; justify-content: flex-end; max-width: none; gap: 4px; }
+.chips.side-tags { margin-top: 0; flex: none; flex-wrap: nowrap; justify-content: flex-end; min-width: 0; max-width: 100%; overflow: hidden; gap: 4px; }
 .chips.lg { margin-top: 0; align-content: center; justify-content: flex-end; }
 .chip {
   font-style: normal;
