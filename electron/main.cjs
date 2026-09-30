@@ -3,6 +3,7 @@ const http = require('http');
 const path = require('path');
 const { spawn } = require('child_process');
 const vault = require('./vault.cjs');
+const updater = require('./update.cjs');
 
 app.setName('项目管理');
 
@@ -26,12 +27,34 @@ ipcMain.on('vault:load', (event) => {
   event.returnValue = callVault(() => vault.load());
 });
 
-ipcMain.on('vault:save', (event, payload) => {
+ipcMain.on('vault:save-sync', (event, payload) => {
   event.returnValue = callVault(() => vault.save(payload));
 });
 
+ipcMain.handle('vault:save', (_event, payload) => callVault(() => vault.save(payload)));
+
 ipcMain.on('vault:git', (event, op) => {
   event.returnValue = callVault(() => vault.gitOp(op));
+});
+
+ipcMain.on('app:version', (event) => {
+  event.returnValue = app.getVersion();
+});
+
+ipcMain.handle('app:check-update', async () => {
+  try {
+    return await updater.checkUpdate();
+  } catch (error) {
+    return { ok: false, msg: error.message || '检查更新失败', version: app.getVersion() };
+  }
+});
+
+ipcMain.handle('app:apply-update', async (_event, assetUrl) => {
+  try {
+    return await updater.applyUpdate(assetUrl);
+  } catch (error) {
+    return { ok: false, msg: error.message || '更新没有完成' };
+  }
 });
 
 function portOpen() {

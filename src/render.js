@@ -532,14 +532,14 @@ function listPage(state, project) {
 
 function statusOrderEditor(state) {
   return `
-    <div class="order-bar">
-      <span>状态顺序</span>
+    <div class="order-list">
+      <span class="order-label">状态顺序</span>
       ${state.ui.statusOrder.map((id) => `
-        <span class="order-chip">
+        <div class="order-row">
           <button type="button" data-act="status-move" data-id="${id}" data-dir="-1" aria-label="前移 ${statusName(id)}">↑</button>
-          ${statusName(id)}
+          <span>${statusName(id)}</span>
           <button type="button" data-act="status-move" data-id="${id}" data-dir="1" aria-label="后移 ${statusName(id)}">↓</button>
-        </span>`).join('')}
+        </div>`).join('')}
     </div>`;
 }
 
@@ -998,14 +998,15 @@ function settingsPage(state) {
   const nav = [
     ['appearance', '外观'],
     ['repo', 'Git 仓库'],
-    ['tags', '标签种类'],
+    ['tags', '标签设置'],
   ];
+  if (state.desktop) nav.unshift(['update', '更新']);
   return `
     <div class="page settings-page">
       <header class="page-head">
         <div>
           <h1>全局设置</h1>
-          <p>外观、仓库，以及所有项目都能用的标签种类。某个项目用哪几个标签，去顶部的项目设置。</p>
+          <p>外观、仓库，以及所有项目都能用的标签设置。某个项目用哪几个标签，去顶部的项目设置。</p>
         </div>
       </header>
       <div class="settings-layout">
@@ -1013,21 +1014,22 @@ function settingsPage(state) {
           ${nav.map(([id, label]) => `<button type="button" class="nav-item ${state.ui.settingsAnchor === id ? 'active' : ''}" data-act="settings-jump" data-id="${id}">${label}</button>`).join('')}
         </nav>
         <div class="settings-body">
+      ${state.desktop ? updateSection(state) : ''}
       <section class="panel" id="sec-appearance">
         <div class="panel-h"><h3>外观</h3></div>
-        <div class="opt">
+        <div class="theme-block">
           <span>主题</span>
-          <div class="seg theme-pair" aria-label="主题">
-            <button type="button" class="${state.settings.theme === 'dark' ? 'on' : ''}" data-act="theme" data-id="dark">${icon('moon', 14)} 深色</button>
-            <button type="button" class="${state.settings.theme === 'light' ? 'on' : ''}" data-act="theme" data-id="light">${icon('sun', 14)} 浅色</button>
-            <button type="button" class="${state.settings.theme === 'teal' ? 'on' : ''}" data-act="theme" data-id="teal">${icon('sun', 14)} 青绿</button>
+          <div class="theme-previews" aria-label="主题">
+            ${themeCard(state, 'dark', '深色', 'moon')}
+            ${themeCard(state, 'light', '浅色', 'sun')}
+            ${themeCard(state, 'teal', '青绿', 'sun')}
           </div>
         </div>
       </section>
       ${repoSection(state)}
       <div id="sec-tags">
-        ${tagDomain(state, 'project', '项目标签种类', '这里只定义种类和可选内容。具体项目选哪一项，在项目设置里，会显示在左侧项目行右边。')}
-        ${tagDomain(state, 'idea', '想法标签种类', '想法列表上的标签种类。和项目标签互不影响。')}
+        ${tagDomain(state, 'project', '项目标签', '这里只定义种类和可选内容。具体项目选哪一项，在项目设置里，会显示在左侧项目行右边。')}
+        ${tagDomain(state, 'idea', '想法标签', '想法列表上的标签。和上面的项目标签分开，互不影响。')}
       </div>
       ${state.desktop ? '' : `
       <section class="panel" id="sec-reset">
@@ -1058,6 +1060,35 @@ function projectSettingsPage(state, project) {
     </div>`;
 }
 
+function themeCard(state, id, label, iconName) {
+  const on = state.settings.theme === id;
+  return `
+    <button type="button" class="theme-card ${on ? 'on' : ''}" data-act="theme" data-id="${id}" aria-pressed="${on}">
+      <span class="theme-shot shot-${id}" aria-hidden="true">
+        <span class="shot-side"></span>
+        <span class="shot-main">
+          <span class="shot-top"></span>
+          <span class="shot-card"></span>
+          <span class="shot-line"></span>
+          <span class="shot-line short"></span>
+        </span>
+      </span>
+      <span class="theme-name">${icon(iconName, 14)} ${label}</span>
+    </button>`;
+}
+
+function updateSection() {
+  const version = globalThis.pms?.version || '0.1.0';
+  return `
+    <section class="panel" id="sec-update">
+      <div class="panel-h"><h3>软件更新</h3><span class="pill">v${esc(version)}</span></div>
+      <p class="hint">打开软件时会查看 GitHub Release。有新版本会弹出窗口，可以选择稍后或立即更新。</p>
+      <div class="row-actions">
+        <button type="button" class="btn" data-act="check-update">检查更新</button>
+      </div>
+    </section>`;
+}
+
 function repoSection(state) {
   const g = state.settings.github;
   const logged = isLoggedIn();
@@ -1065,10 +1096,10 @@ function repoSection(state) {
     <section class="panel" id="sec-repo">
       <div class="panel-h"><h3>Git 仓库</h3><span class="pill ${logged ? 'ok' : ''}">${logged ? `已登录 ${esc(g.username)}` : '未登录'}</span></div>
       <p class="hint">${state.desktop
-        ? '只提交项目数据，例如任务、Bug、想法、里程碑和回收站。这个软件本身不会进仓库。登录会真的连接 GitHub。'
+        ? '只提交项目数据。登录成功后会记在这台电脑，下次打开不用再填。令牌如果在 GitHub 上设了过期时间，到期后需要换新的；创建时可以选择永不过期。'
         : '只提交项目数据，例如任务、Bug、想法、里程碑和回收站。这个软件本身不会进仓库。原型不会真的连接 GitHub，登录状态记在这台浏览器里。'}</p>
       <div class="form-grid">
-        <label class="stack">仓库地址
+        <label class="stack wide">仓库地址
           <input data-input="github-url" value="${esc(g.url)}" placeholder="https://github.com/你的名字/仓库" />
         </label>
         <label class="stack">分支
@@ -1083,13 +1114,14 @@ function repoSection(state) {
       </div>
       <label class="checkline">
         <input type="checkbox" data-change="github-remember" ${g.remembered ? 'checked' : ''} />
-        <span>登录后记住这个仓库</span>
+        <span>在这台电脑保持登录</span>
       </label>
       <div class="row-actions">
         <button type="button" class="btn primary" data-act="save-github">保存并登录</button>
         <button type="button" class="btn" data-act="logout" ${logged ? '' : 'disabled'}>退出登录</button>
       </div>
-      ${g.remembered && g.url ? `<p class="hint">已记住仓库 ${esc(g.url)}。</p>` : ''}
+      ${g.lastError ? `<p class="login-error">${esc(g.lastError)}</p>` : ''}
+      ${logged ? `<p class="hint">已保持登录 ${esc(g.url)}。退出登录前都会留在这台电脑。</p>` : ''}
       ${state.desktop && state.vaultPath ? `<p class="hint">项目文件在 ${esc(state.vaultPath)}。令牌只留在这台电脑，不会提交。</p>` : ''}
     </section>`;
 }
@@ -1365,7 +1397,19 @@ function modal(state, project) {
   else if (m.type === 'task') body = taskModal(state, project);
   else if (m.type === 'note') body = noteModal(state);
   else if (m.type === 'bug') body = bugModal(state, project);
+  else if (m.type === 'update') body = updateModal(m);
   return `<div class="modal-back" data-act="close-modal"><div class="dialog" data-act="stop" role="dialog">${body}</div></div>`;
+}
+
+function updateModal(modal) {
+  const notes = modal.notes || '这个版本没有附带说明。';
+  return `
+    <h2>发现新版本 ${esc(modal.version)}</h2>
+    <p class="hint update-notes">${esc(notes)}</p>
+    <div class="row-actions end">
+      <button type="button" class="btn" data-act="close-modal">稍后</button>
+      <button type="button" class="btn primary" data-act="apply-update">${modal.canApply ? '下载并重启' : '打开下载页面'}</button>
+    </div>`;
 }
 
 function projectModal(state) {

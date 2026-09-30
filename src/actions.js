@@ -5,6 +5,7 @@ import {
   currentProject,
   findProject,
   gitChanges,
+  hasGithubFields,
   hydrateFiles,
   isLoggedIn,
   kinds,
@@ -45,6 +46,12 @@ export function bind(renderFn) {
   document.addEventListener('pointerleave', resetPointerMotion);
   document.addEventListener('scroll', onSettingsScroll, true);
   document.addEventListener('toggle', onDepToggle, true);
+  window.addEventListener('beforeunload', () => {
+    clearTimeout(persistTimer);
+    persist({ sync: true });
+  });
+  window.addEventListener('pms-refresh', () => paint());
+  if (globalThis.pms?.checkUpdate) setTimeout(() => checkForUpdate(false), 1200);
 }
 
 function onPointerMove(event) {
@@ -105,15 +112,28 @@ function resetOneSheet(node) {
   node.style.setProperty('--tilt-y', '0deg');
 }
 
-function draw(options) {
-  persist();
+let persistTimer = 0;
+let persistWantsStatus = false;
+
+function schedulePersist(options = {}) {
+  if (options.status) persistWantsStatus = true;
+  clearTimeout(persistTimer);
+  persistTimer = setTimeout(() => {
+    const status = persistWantsStatus;
+    persistWantsStatus = false;
+    persist({ status });
+  }, options.delay ?? 40);
+}
+
+function draw(options = {}) {
   paint(options);
+  schedulePersist(options);
 }
 
 function toast(msg, kind = 'info') {
   state.toast = { msg, kind };
-  persist();
   paint();
+  schedulePersist();
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => {
     state.toast = null;
@@ -194,10 +214,12 @@ function run(act, el) {
       return;
     case 'toggle-sidebar':
       state.ui.sidebarOpen = !state.ui.sidebarOpen;
-      break;
+      draw();
+      return;
     case 'close-sidebar':
       state.ui.sidebarOpen = false;
-      break;
+      draw();
+      return;
     case 'activity':
       openActivity(id);
       break;
@@ -396,10 +418,18 @@ function run(act, el) {
       break;
     case 'scm-toggle':
       state.ui.scmOpen = !state.ui.scmOpen;
-      break;
+      draw({ status: state.ui.scmOpen });
+      return;
     case 'scm-open':
       state.ui.scmOpen = true;
-      break;
+      draw({ status: true });
+      return;
+    case 'check-update':
+      checkForUpdate(true);
+      return;
+    case 'apply-update':
+      applyDesktopUpdate();
+      return;
     case 'scm-tool':
       scmTool(id);
       return;
@@ -592,7 +622,7 @@ function openQuick(kind) {
       platformId: 'pv_win',
       versionName: 'v0.1',
       versionTitle: '初始原型',
-      modulesText: '战斗系统\n移动系统',
+      modulesText: '默认模块',
     };
     return;
   }
@@ -761,22 +791,96 @@ function deleteBug(id) {
   toast('Bug 已放进回收站');
 }
 
+async function checkForUpdate(manual) {
+  if (!globalThis.pms?.checkUpdate) return;
+  if (manual) {
+    toast('正在检查更新');
+  }
+  let result;
+  try {
+    result = await globalThis.pms.checkUpdate();
+  } catch (error) {
+    if (manual) toast(error?.message || '检查更新失败', 'error');
+    return;
+  }
+  if (!result?.ok) {
+    if (manual) toast(result?.msg || '检查更新失败', 'error');
+    return;
+  }
+  if (!result.update) {
+    if (manual) toast('已经是最新版本');
+    return;
+  }
+  if (state.modal && !manual) return;
+  state.modal = { type: 'update', ...result.update };
+  draw();
+}
+
+async function applyDesktopUpdate() {
+  const modal = state.modal;
+  if (!modal || modal.type !== 'update') return;
+  if (!modal.canApply) {
+    window.open(modal.pageUrl, '_blank', 'noopener');
+    state.modal = null;
+    draw();
+    return;
+  }
+  const assetUrl = modal.assetUrl;
+  state.modal = null;
+  toast('正在下载更新，完成后会重启');
+  draw();
+  try {
+    const result = await globalThis.pms.applyUpdate(assetUrl);
+    if (!result?.ok) toast(result?.msg || '更新没有完成', 'error');
+  } catch (error) {
+    toast(error?.message || '更新没有完成', 'error');
+  }
+}
+
+function githubFieldError(g) {
+  const url = (g.url || '').trim();
+  const branch = (g.branch || '').trim();
+  const username = (g.username || '').trim();
+  const token = (g.token || '').trim();
+  if (!url) return '仓库地址是空的。';
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return '仓库地址格式不对。需要完整写成 https://github.com/用户名/仓库名';
+  }
+  if (parsed.protocol !== 'https:' || (parsed.hostname !== 'github.com' && !parsed.hostname.endsWith('.github.com'))) {
+    return '仓库地址的网站不对。必须是 https://github.com/用户名/仓库名';
+  }
+  const parts = parsed.pathname.split('/').filter(Boolean);
+  if (parts.length < 2) return '仓库地址里缺少用户名或仓库名。格式是 https://github.com/用户名/仓库名';
+  if (!branch) return '分支是空的。一般填 main。';
+  if (!username) return '用户名是空的。';
+  if (!token) return '个人访问令牌是空的。';
+  if (token.length < 20) return '个人访问令牌太短，可能没有复制完整。';
+  return '';
+}
+
 function saveGithub() {
   const g = state.settings.github;
   g.url = g.url.trim();
   g.branch = g.branch.trim() || 'main';
   g.username = g.username.trim();
   g.token = g.token.trim();
-  if (!isLoggedIn()) {
-    toast('要填 GitHub 仓库地址、用户名和令牌。地址需要是 github.com', 'error');
+  const problem = githubFieldError(g);
+  if (problem || !hasGithubFields()) {
+    g.verified = false;
+    g.lastError = problem || '仓库地址、用户名或令牌还有问题。';
     draw();
     return;
   }
   if (state.git.live) {
+    g.lastError = '正在连接 GitHub…';
+    paint();
     const result = desktopGit({ op: 'login' });
     g.verified = !!result.ok;
+    g.lastError = result.ok ? '' : (result.msg || '登录失败');
     if (!result.ok) {
-      toast(result.msg, 'error');
       draw();
       return;
     }
@@ -1528,7 +1632,7 @@ function onInput(event) {
     state.settings.github.verified = false;
   }
   else if (key === 'modal' && state.modal) state.modal[el.dataset.key] = el.value;
-  persist();
+  schedulePersist({ delay: 700 });
   if (live) {
     paint({
       keepFocus: true,
@@ -1552,7 +1656,7 @@ function onKey(event) {
     const next = clampSide((Number(state.ui.sidebarWidth) || 268) + (event.key === 'ArrowRight' ? 16 : -16));
     state.ui.sidebarWidth = next;
     document.querySelector('.sidebar')?.style.setProperty('--side-w', `${next}px`);
-    persist();
+    schedulePersist();
     return;
   }
   if (focus?.classList.contains('tab') && event.altKey && (event.key === 'ArrowLeft' || event.key === 'ArrowRight')) {

@@ -16,21 +16,40 @@ function absFromRel(rel) {
   return path.join(vaultDir(), ...rel.split('/'));
 }
 
-function gitRaw(args, extra = []) {
+function redact(text, token) {
+  let out = String(text || '');
+  const secret = String(token || '').trim();
+  if (secret) {
+    out = out.split(secret).join('***');
+    out = out.split(encodeURIComponent(secret)).join('***');
+  }
+  return out.replace(/x-access-token:[^@\s'"]+/gi, 'x-access-token:***');
+}
+
+function gitRaw(args, envExtra = {}, token = '') {
+  const env = {
+    ...process.env,
+    GIT_TERMINAL_PROMPT: '0',
+    GCM_INTERACTIVE: 'never',
+    ...envExtra,
+  };
+  delete env.GIT_ASKPASS;
+  delete env.SSH_ASKPASS;
   try {
-    const stdout = execFileSync('git', [...extra, ...args], {
+    const stdout = execFileSync('git', args, {
       cwd: vaultDir(),
       windowsHide: true,
       encoding: 'utf8',
       maxBuffer: 8 * 1024 * 1024,
       stdio: ['ignore', 'pipe', 'pipe'],
+      env,
     });
-    return { ok: true, stdout: stdout || '', stderr: '' };
+    return { ok: true, stdout: redact(stdout, token), stderr: '' };
   } catch (error) {
     if (error.code === 'ENOENT') return { ok: false, missing: true, stdout: '', stderr: 'git-missing' };
     const stdout = error.stdout ? error.stdout.toString() : '';
     const stderr = error.stderr ? error.stderr.toString() : '';
-    return { ok: false, stdout, stderr: `${stderr} ${error.message || ''}`.trim() };
+    return { ok: false, stdout: redact(stdout, token), stderr: redact(`${stderr} ${error.message || ''}`.trim(), token) };
   }
 }
 
@@ -39,10 +58,15 @@ function explain(result) {
     return '这台电脑没有找到 Git。先安装 Git for Windows，再打开这个软件。';
   }
   const text = `${result?.stderr || ''}\n${result?.stdout || ''}`;
-  if (/Authentication failed|HTTP Basic|401|403|Invalid username or token/i.test(text)) {
-    return 'GitHub 拒绝了登录。检查用户名和个人访问令牌。';
+  if (/Authentication failed|HTTP Basic|401|403|Invalid username or token|bad credentials/i.test(text)) {
+    return '个人访问令牌被拒绝。令牌可能过期、复制不完整，或没有 Contents 读写权限。';
   }
-  if (/Repository not found/i.test(text)) return '找不到这个仓库。确认地址，以及令牌有没有仓库权限。';
+  if (/Repository not found/i.test(text)) {
+    return '仓库地址不对，或这枚令牌看不到这个仓库。请核对地址是否完整，并确认令牌勾选了该仓库的 Contents 读写。';
+  }
+  if (/could not read Username|prompt script|terminal prompts disabled/i.test(text)) {
+    return 'Git 没有使用你填的令牌，而是去弹登录窗口。请关掉这个窗口后再开一次新版本。';
+  }
   if (/could not resolve host|unable to access|Failed to connect|Connection was reset/i.test(text)) {
     return '连不上 GitHub。';
   }
@@ -52,10 +76,23 @@ function explain(result) {
   return lines.slice(-2).join(' ') || 'Git 没有完成';
 }
 
-function authConfig(username, token) {
-  if (!username || !token) return [];
-  const basic = Buffer.from(`${username}:${token}`).toString('base64');
-  return ['-c', `http.extraHeader=Authorization: Basic ${basic}`];
+function authEnv(token) {
+  const secret = encodeURIComponent(String(token || '').trim());
+  const instead = `https://x-access-token:${secret}@github.com/`;
+  return {
+    GIT_CONFIG_COUNT: '3',
+    GIT_CONFIG_KEY_0: 'credential.helper',
+    GIT_CONFIG_VALUE_0: '',
+    GIT_CONFIG_KEY_1: 'credential.https://github.com.helper',
+    GIT_CONFIG_VALUE_1: '',
+    GIT_CONFIG_KEY_2: `url.${instead}.insteadOf`,
+    GIT_CONFIG_VALUE_2: 'https://github.com/',
+  };
+}
+
+function gitAuthed(op, args) {
+  if (!op?.token) return { ok: false, stderr: 'missing-token' };
+  return gitRaw(args, authEnv(op.token), op.token);
 }
 
 function ensureRepo() {
@@ -311,15 +348,33 @@ function gitOp(op) {
   return { ok: false, msg: '不认识这个操作' };
 }
 
+function nameList(args) {
+  const result = gitRaw(args);
+  if (!result.ok || !result.stdout.trim()) return [];
+  return result.stdout.split('\n').map((line) => line.trim()).filter(Boolean);
+}
+
 function commitMessage(message, branch) {
   const text = String(message || '').trim();
   if (!text) return { ok: false, msg: '先写提交信息' };
-  const staged = gitRaw(['diff', '--cached', '--name-only']);
-  if (!staged.ok || !staged.stdout.trim()) return { ok: false, msg: '没有暂存的更改', status: readStatus(branch) };
+  const staged = nameList(['diff', '--cached', '--name-only']);
+  const changes = [...new Set([
+    ...nameList(['diff', '--name-only']),
+    ...nameList(['ls-files', '--others', '--exclude-standard']),
+  ])];
+  if (!changes.length) {
+    return { ok: false, msg: '没有可提交的更改。已经暂存、工作区里没有新改动的文件不会被提交。', status: readStatus(branch) };
+  }
+  if (staged.length) gitRaw(['restore', '--staged', '--', ...staged]);
+  const added = gitRaw(['add', '--', ...changes]);
+  if (!added.ok) {
+    if (staged.length) gitRaw(['add', '--', ...staged]);
+    return { ok: false, msg: explain(added), status: readStatus(branch) };
+  }
   const result = gitRaw(['commit', '-m', text]);
+  if (staged.length) gitRaw(['add', '--', ...staged]);
   if (!result.ok) return { ok: false, msg: explain(result), status: readStatus(branch) };
-  const count = staged.stdout.trim().split('\n').filter(Boolean).length;
-  return { ok: true, msg: `已提交 ${count} 个文件`, status: readStatus(branch) };
+  return { ok: true, msg: `已提交 ${changes.length} 个文件`, status: readStatus(branch) };
 }
 
 function pushRemote(op) {
@@ -328,7 +383,7 @@ function pushRemote(op) {
   if (!op.username || !op.token) return { ok: false, msg: '请先在设置里登录 GitHub 仓库' };
   const remote = setRemote(checked.url);
   if (!remote.ok) return { ok: false, msg: explain(remote) };
-  const result = gitRaw(['push', '-u', 'origin', checked.branch], authConfig(op.username, op.token));
+  const result = gitAuthed(op, ['push', '-u', 'origin', checked.branch]);
   if (!result.ok) return { ok: false, msg: explain(result), status: readStatus(checked.branch) };
   return { ok: true, msg: `已推送到 ${op.url} 的 ${checked.branch}`, status: readStatus(checked.branch) };
 }
@@ -339,7 +394,7 @@ function pullRemote(op) {
   if (!op.username || !op.token) return { ok: false, msg: '请先在设置里登录 GitHub 仓库' };
   const remote = setRemote(checked.url);
   if (!remote.ok) return { ok: false, msg: explain(remote) };
-  const result = gitRaw(['pull', '--no-rebase', 'origin', checked.branch], authConfig(op.username, op.token));
+  const result = gitAuthed(op, ['pull', '--no-rebase', 'origin', checked.branch]);
   if (!result.ok) return { ok: false, msg: explain(result), status: readStatus(checked.branch) };
   const fresh = /Already up to date/i.test(`${result.stdout}\n${result.stderr}`);
   return {
@@ -356,7 +411,7 @@ function refresh(op) {
     const checked = validateGithub(op.url, branch);
     if (checked.ok) {
       setRemote(checked.url);
-      const fetched = gitRaw(['fetch', 'origin', checked.branch], authConfig(op.username, op.token));
+      const fetched = gitAuthed(op, ['fetch', 'origin', checked.branch]);
       const status = readStatus(checked.branch);
       if (!fetched.ok) return { ok: false, msg: explain(fetched), status };
       const n = status.local.length + status.remote.length;
@@ -374,11 +429,8 @@ function login(op) {
   if (!op.username || !op.token) return { ok: false, msg: '要填 GitHub 仓库地址、用户名和令牌' };
   const remote = setRemote(checked.url);
   if (!remote.ok) return { ok: false, msg: explain(remote) };
-  const probe = gitRaw(
-    ['ls-remote', '--heads', checked.url, `refs/heads/${checked.branch}`],
-    authConfig(op.username, op.token),
-  );
-  if (!probe.ok) return { ok: false, msg: explain(probe) };
+  const probe = gitAuthed(op, ['ls-remote', '--heads', checked.url, `refs/heads/${checked.branch}`]);
+  if (!probe.ok) return { ok: false, msg: explain(probe), detail: probe.stderr || probe.stdout || '' };
   return { ok: true, msg: '已连上仓库', status: readStatus(checked.branch) };
 }
 

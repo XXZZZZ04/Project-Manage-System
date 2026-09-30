@@ -12,6 +12,8 @@ const ls = globalThis.localStorage ?? {
 
 export let state;
 
+let saveSeq = 0;
+
 function serializeTask(t) {
   return {
     id: t.id,
@@ -251,7 +253,7 @@ function bootDesktop(loaded) {
   state.vaultPath = loaded.vaultPath || '';
   normalizeUi(state);
   if (loaded.status) applyGitStatus(loaded.status);
-  if (loaded.empty) persist({ status: true });
+  if (loaded.empty) persist({ status: true, sync: true });
 }
 
 function applyDirtySeed(next) {
@@ -284,19 +286,28 @@ export function persist(options = {}) {
     copy.ui.motion = null;
   }
   if (state.desktop && globalThis.pms?.isDesktop) {
-    const result = globalThis.pms.save({
+    const seq = ++saveSeq;
+    const payload = {
       files: syncFiles(copy),
       session: {
         settings: copy.settings,
         ui: copy.ui,
         commitMessage: copy.git?.commitMessage || '',
       },
-      status: !!(options.status || copy.ui?.scmOpen),
-    });
-    if (result?.status) applyGitStatus(result.status);
-    if (result && result.ok === false) {
-      state.toast = state.toast || { msg: result.msg || '没有保存到磁盘', kind: 'error' };
-    }
+      status: !!options.status,
+    };
+    const applySave = (result) => {
+      if (result?.status) {
+        applyGitStatus(result.status);
+        window.dispatchEvent(new Event('pms-refresh'));
+      }
+      if (seq !== saveSeq) return;
+      if (result && result.ok === false) {
+        state.toast = state.toast || { msg: result.msg || '没有保存到磁盘', kind: 'error' };
+      }
+    };
+    if (options.sync || !globalThis.pms.save) applySave(globalThis.pms.saveSync(payload));
+    else globalThis.pms.save(payload).then(applySave, (error) => applySave({ ok: false, msg: error?.message || '没有保存到磁盘' }));
     return;
   }
   ls.setItem(KEY, JSON.stringify(copy));
@@ -369,7 +380,7 @@ export function reset() {
     state.desktop = true;
     state.vaultPath = vaultPath;
     normalizeUi(state);
-    persist({ status: true });
+    persist({ status: true, sync: true });
     return;
   }
   ls.removeItem(KEY);
@@ -377,16 +388,20 @@ export function reset() {
   persist();
 }
 
-export function isLoggedIn() {
-  const g = state.settings.github;
+export function hasGithubFields() {
+  const g = state.settings?.github;
   if (!g?.username || !g.token || !g.url) return false;
   try {
     const host = new URL(g.url).hostname;
-    if (host !== 'github.com' && !host.endsWith('.github.com')) return false;
+    return host === 'github.com' || host.endsWith('.github.com');
   } catch {
     return false;
   }
-  if (state?.desktop) return !!g.verified;
+}
+
+export function isLoggedIn() {
+  if (!hasGithubFields()) return false;
+  if (state?.desktop) return !!state.settings.github.verified;
   return true;
 }
 
