@@ -116,7 +116,8 @@ let persistTimer = 0;
 let persistWantsStatus = false;
 
 function schedulePersist(options = {}) {
-  if (options.status) persistWantsStatus = true;
+  if (options.status === false) persistWantsStatus = false;
+  else if (options.status || state.ui?.scmOpen) persistWantsStatus = true;
   clearTimeout(persistTimer);
   persistTimer = setTimeout(() => {
     const status = persistWantsStatus;
