@@ -80,31 +80,62 @@ async function checkUpdate() {
   };
 }
 
+function psQuote(value) {
+  return `'${String(value).replace(/'/g, "''")}'`;
+}
+
 async function applyUpdate(assetUrl) {
   const target = targetExe();
   if (!target) return { ok: false, msg: '现在是开发运行，不能覆盖程序。请到 Release 页面下载新版本。' };
   if (!assetUrl) return { ok: false, msg: '这个版本没有可下载的安装包' };
-  const dest = path.join(os.tmpdir(), `ProjectManage-update-${Date.now()}.exe`);
+  const stamp = Date.now();
+  const dest = path.join(os.tmpdir(), `ProjectManage-update-${stamp}.exe`);
+  const scriptPath = path.join(os.tmpdir(), `ProjectManage-update-${stamp}.ps1`);
+  const logPath = path.join(os.tmpdir(), 'ProjectManage-update.log');
   const response = await request(assetUrl, {
     'User-Agent': 'ProjectManage',
     Accept: 'application/octet-stream',
   });
   if (response.status !== 200) return { ok: false, msg: `下载失败（${response.status}）` };
   fs.writeFileSync(dest, response.body);
-  const script = `
-$target = ${JSON.stringify(target)}
-$source = ${JSON.stringify(dest)}
-Wait-Process -Id ${process.pid} -ErrorAction SilentlyContinue
-Start-Sleep -Milliseconds 700
-Copy-Item -LiteralPath $source -Destination $target -Force
-Start-Process -FilePath $target
-`;
-  spawn('powershell', ['-NoProfile', '-WindowStyle', 'Hidden', '-Command', script], {
+  const parent = process.ppid || 0;
+  const script = [
+    "$ErrorActionPreference = 'Continue'",
+    `$log = ${psQuote(logPath)}`,
+    "function Log($m) { Add-Content -LiteralPath $log -Value ((Get-Date).ToString('o') + ' ' + $m) }",
+    "Log 'begin'",
+    `Wait-Process -Id ${process.pid} -ErrorAction SilentlyContinue`,
+    `$parent = Get-CimInstance Win32_Process -Filter "ProcessId=${parent}" -ErrorAction SilentlyContinue`,
+    "if ($parent -and $parent.Name -like 'ProjectManage*') { Wait-Process -Id $parent.ProcessId -ErrorAction SilentlyContinue }",
+    'Start-Sleep -Seconds 1',
+    `$target = ${psQuote(target)}`,
+    `$source = ${psQuote(dest)}`,
+    '$copied = $false',
+    'for ($i = 0; $i -lt 20; $i++) {',
+    '  try {',
+    '    Copy-Item -LiteralPath $source -Destination $target -Force -ErrorAction Stop',
+    "    Log 'copied'",
+    '    $copied = $true',
+    '    break',
+    '  } catch {',
+    '    Log $_.Exception.Message',
+    '    Start-Sleep -Seconds 1',
+    '  }',
+    '}',
+    "if (-not $copied) { Log 'copy failed'; exit 1 }",
+    'Start-Process -FilePath $target',
+    "Log 'started'",
+  ].join('\r\n');
+  fs.writeFileSync(scriptPath, script, 'utf8');
+  const child = spawn(`start "" powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "${scriptPath}"`, {
+    shell: true,
     detached: true,
     stdio: 'ignore',
-  }).unref();
-  setTimeout(() => app.quit(), 400);
-  return { ok: true, msg: '正在重启到新版本' };
+    windowsHide: true,
+  });
+  child.unref();
+  setTimeout(() => app.exit(0), 600);
+  return { ok: true, msg: '正在替换这个程序并重新打开' };
 }
 
 module.exports = {
